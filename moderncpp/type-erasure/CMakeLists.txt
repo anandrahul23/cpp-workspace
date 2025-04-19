@@ -13,8 +13,8 @@ set(CMAKE_CXX_EXTENSIONS OFF) # Optional: disable compiler-specific extensions f
 # Define directories relative to the CMakeLists.txt location
 set(INC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/include)
 set(SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src)
-# Assuming your tests will live in a 'test' directory
 set(TEST_DIR ${CMAKE_CURRENT_SOURCE_DIR}/test)
+set(BENCHMARK_DIR ${CMAKE_CURRENT_SOURCE_DIR}/benchmark) # Define benchmark dir
 
 # --- Compiler Flags (matches -Wall -g -O3 from Makefile) ---
 # CMake handles optimization levels (-O3) via build types (e.g., Release).
@@ -51,10 +51,10 @@ FetchContent_Declare(
   googletest
   # Specify the Git repository and a tag (e.g., a release version)
   GIT_REPOSITORY https://github.com/google/googletest.git
-  GIT_TAG        v1.16.0 # Using v1.14.0 as an example, update if needed
+  GIT_TAG        v1.16.0 # Using a recent tag, update if needed
 )
 
-# Ensure Google Mock is also available
+# Ensure Google Mock is also available (often needed for matchers)
 set(BUILD_GMOCK ON CACHE BOOL "" FORCE)
 set(BUILD_GTEST ON CACHE BOOL "" FORCE)
 
@@ -63,6 +63,21 @@ set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 
 # Make Google Test available (downloads and configures it)
 FetchContent_MakeAvailable(googletest)
+
+# --- Google Benchmark Integration ---
+FetchContent_Declare(
+  googlebenchmark
+  GIT_REPOSITORY https://github.com/google/benchmark.git
+  GIT_TAG        v1.8.3 # Use a recent stable release tag, update if needed
+)
+
+# --- Add this line ---
+# Tell Google Benchmark's build system NOT to build its own tests
+set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "Disable building benchmark's tests" FORCE)
+# -------
+# Make Google Benchmark available (downloads and configures it)
+FetchContent_MakeAvailable(googlebenchmark)
+
 
 # --- Test Executable Target ---
 # Find all .cpp files in the test directory
@@ -87,6 +102,33 @@ if(TEST_SRC_FILES)
 else()
   message(STATUS "No source files found in ${TEST_DIR}. Skipping test target 'runTests'.")
 endif()
+
+
+# --- Benchmark Executable Target ---
+# Find all .cpp files in the benchmark directory
+file(GLOB BENCHMARK_SRC_FILES "${BENCHMARK_DIR}/*.cpp")
+
+# Only create the benchmark target if benchmark source files exist
+if(BENCHMARK_SRC_FILES)
+  message(STATUS "Found benchmark sources, creating runBenchmarks target.")
+  add_executable(runBenchmarks ${BENCHMARK_SRC_FILES})
+
+  # Link benchmark executable against Google Benchmark libraries
+  # benchmark::benchmark_main provides the main() function for benchmarks
+  target_link_libraries(runBenchmarks PRIVATE benchmark::benchmark benchmark::benchmark_main)
+
+  # Ensure benchmarks can find your project's headers
+  target_include_directories(runBenchmarks PRIVATE ${INC_DIR})
+
+  # If your benchmarks need to link against code from your main program,
+  # you might need to create a library target for shared code or link
+  # against the main executable target if appropriate (less common).
+  # Example: target_link_libraries(runBenchmarks PRIVATE myprogram)
+
+else()
+  message(STATUS "No source files found in ${BENCHMARK_DIR}. Skipping target 'runBenchmarks'.")
+endif()
+
 
 # --- Build Directory & Clean ---
 # CMake handles the build directory automatically (out-of-source builds are recommended).

@@ -10,38 +10,36 @@ export namespace ThreadSafeWorld
     class ControlBlock
     {
     private:
-        atomic<int> use_count;
-        atomic<int> weak_count;
+        atomic<int> use_count{1};
+        atomic<int> weak_count{0};
 
     public:
-        ControlBlock() : use_count{1}, weak_count{0} {};
-        
-        int addRef()
+        void addRef() noexcept
         {
-            return use_count.fetch_add(1, std::memory_order_relaxed);
-        }
-        
-        int removeRef()
-        {
-            return use_count.fetch_sub(1, std::memory_order_acq_rel);
+            use_count.fetch_add(1, memory_order_relaxed);
         }
 
-        int addWeakRef()
+        int removeRef() noexcept
         {
-            return weak_count.fetch_add(1, std::memory_order_relaxed);
+            return use_count.fetch_sub(1, memory_order_release);
         }
 
-        int removeWeakRef()
+        void addWeakRef() noexcept
         {
-            return weak_count.fetch_sub(1, std::memory_order_acq_rel);
+            weak_count.fetch_add(1, memory_order_relaxed);
         }
 
-        int use_count_val() const
+        void removeWeakRef() noexcept
+        {
+            weak_count.fetch_sub(1, memory_order_release);
+        }
+
+        int use_count_val() const noexcept
         {
             return use_count.load(memory_order_acquire);
         }
 
-        int weak_count_val() const
+        int weak_count_val() const noexcept
         {
             return weak_count.load(memory_order_acquire);
         }
@@ -51,158 +49,249 @@ export namespace ThreadSafeWorld
     class LockFreeSharedWithWeakPtr
     {
     private:
-        atomic<ControlBlock*> cb{nullptr};
-        atomic<T*> ptr{nullptr};
+        struct alignas(16) PointerPair
+        {
+            ControlBlock *cb;
+            T *ptr;
+            bool operator==(const PointerPair &other) const noexcept
+            {
+                return cb == other.cb && ptr == other.ptr;
+            }
+        };
+
+        // Separate atomic pointers for fallback mechanism
+        struct AtomicPointers
+        {
+            atomic<ControlBlock *> cb{nullptr};
+            atomic<T *> ptr{nullptr};
+            atomic<bool> in_progress{false};
+        };
+
+        union
+        {
+            atomic<PointerPair> ptrs;
+            AtomicPointers fallback;
+        };
+
+        static constexpr bool has_native_dwcas()
+        {
+            return atomic<PointerPair>::is_always_lock_free;
+        }
+
+        bool try_update_pointers(ControlBlock *new_cb, T *new_ptr)
+        {
+            if constexpr (!has_native_dwcas())
+            {
+                while (true)
+                {
+                    bool expected = false;
+                    if (!fallback.in_progress.compare_exchange_strong(
+                            expected, true, memory_order_acquire))
+                    {
+                        continue;
+                    }
+
+                    fallback.cb.store(new_cb, memory_order_relaxed);
+                    fallback.ptr.store(new_ptr, memory_order_relaxed);
+
+                    fallback.in_progress.store(false, memory_order_release);
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        bool compare_exchange_ptrs(PointerPair &expected, const PointerPair &desired) noexcept
+        {
+            if constexpr (has_native_dwcas())
+            {
+                return atomic_compare_exchange_strong_explicit(
+                    &ptrs, &expected, desired,
+                    memory_order_acq_rel, memory_order_acquire);
+            }
+            else
+            {
+                while (true)
+                {
+                    auto current_cb = fallback.cb.load(memory_order_acquire);
+                    auto current_ptr = fallback.ptr.load(memory_order_acquire);
+
+                    if (current_cb != expected.cb || current_ptr != expected.ptr)
+                    {
+                        expected.cb = current_cb;
+                        expected.ptr = current_ptr;
+                        return false;
+                    }
+
+                    if (try_update_pointers(desired.cb, desired.ptr))
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        PointerPair load_ptrs(memory_order order) const noexcept
+        {
+            if constexpr (has_native_dwcas())
+            {
+                return ptrs.load(order);
+            }
+            else
+            {
+                while (fallback.in_progress.load(memory_order_acquire))
+                {
+                }
+                return PointerPair{
+                    fallback.cb.load(order),
+                    fallback.ptr.load(order)};
+            }
+        }
+
+        void store_ptrs(const PointerPair &new_ptrs, memory_order order) noexcept
+        {
+            if constexpr (has_native_dwcas())
+            {
+                ptrs.store(new_ptrs, order);
+            }
+            else
+            {
+                try_update_pointers(new_ptrs.cb, new_ptrs.ptr);
+            }
+        }
 
     public:
-        LockFreeSharedWithWeakPtr() noexcept = default;
-        constexpr LockFreeSharedWithWeakPtr(std::nullptr_t) noexcept : cb{nullptr}, ptr{nullptr} {};
-        
-        explicit LockFreeSharedWithWeakPtr(T* p) noexcept 
-            : cb{p ? new ControlBlock() : nullptr}
-            , ptr{p}
+        LockFreeSharedWithWeakPtr() noexcept
         {
-            if(p) {
-                atomic_thread_fence(std::memory_order_release);
+            if constexpr (has_native_dwcas())
+            {
+                ptrs = PointerPair{nullptr, nullptr};
             }
         }
 
-        LockFreeSharedWithWeakPtr(const LockFreeSharedWithWeakPtr& other) noexcept
+        constexpr LockFreeSharedWithWeakPtr(std::nullptr_t) noexcept
         {
-            ControlBlock* other_cb = other.cb.load(std::memory_order_acquire);
-            T* other_ptr = other.ptr.load(std::memory_order_acquire);
-            
-            if(other_cb)
+            if constexpr (has_native_dwcas())
             {
-                other_cb->addRef();
-                cb.store(other_cb, std::memory_order_release);
-                ptr.store(other_ptr, std::memory_order_release);
+                ptrs = PointerPair{nullptr, nullptr};
             }
         }
 
-        LockFreeSharedWithWeakPtr& operator=(const LockFreeSharedWithWeakPtr& other) noexcept
+        explicit LockFreeSharedWithWeakPtr(T *p) noexcept
         {
-            if(this != &other)
+            PointerPair new_ptrs{p ? new ControlBlock() : nullptr, p};
+            store_ptrs(new_ptrs, memory_order_release);
+        }
+
+        LockFreeSharedWithWeakPtr(const LockFreeSharedWithWeakPtr &other) noexcept
+        {
+            auto other_ptrs = other.load_ptrs(memory_order_acquire);
+            if (other_ptrs.cb)
             {
-                LockFreeSharedWithWeakPtr temp{other};
-                this->swap(temp);
+                other_ptrs.cb->addRef();
+                store_ptrs(other_ptrs, memory_order_release);
+            }
+        }
+
+        LockFreeSharedWithWeakPtr &operator=(const LockFreeSharedWithWeakPtr &other) noexcept
+        {
+            if (this != &other)
+            {
+                auto new_ptrs = other.load_ptrs(memory_order_acquire);
+                if (new_ptrs.cb)
+                {
+                    new_ptrs.cb->addRef();
+                }
+
+                auto old_ptrs = exchange_ptrs(new_ptrs);
+                if (old_ptrs.cb)
+                {
+                    release(old_ptrs);
+                }
             }
             return *this;
         }
 
-        void swap(LockFreeSharedWithWeakPtr& other) noexcept
+        void swap(LockFreeSharedWithWeakPtr &other) noexcept
         {
-            ControlBlock* temp_cb = cb.load(std::memory_order_acquire);
-            T* temp_ptr = ptr.load(std::memory_order_acquire);
-            
-            cb.store(other.cb.load(std::memory_order_acquire), std::memory_order_release);
-            ptr.store(other.ptr.load(std::memory_order_acquire), std::memory_order_release);
-            
-            other.cb.store(temp_cb, std::memory_order_release);
-            other.ptr.store(temp_ptr, std::memory_order_release);
-        }
+            auto my_ptrs = load_ptrs(memory_order_acquire);
+            auto other_ptrs = other.load_ptrs(memory_order_acquire);
 
-        LockFreeSharedWithWeakPtr(LockFreeSharedWithWeakPtr&& other) noexcept
-        {
-            ControlBlock* other_cb = other.cb.load(std::memory_order_acquire);
-            T* other_ptr = other.ptr.load(std::memory_order_acquire);
-            
-            cb.store(other_cb, std::memory_order_release);
-            ptr.store(other_ptr, std::memory_order_release);
-            
-            other.cb.store(nullptr, std::memory_order_release);
-            other.ptr.store(nullptr, std::memory_order_release);
-        }
-
-        LockFreeSharedWithWeakPtr& operator=(LockFreeSharedWithWeakPtr&& other) noexcept
-        {
-            if(this != &other)
+            while (!compare_exchange_ptrs(my_ptrs, other_ptrs) ||
+                   !other.compare_exchange_ptrs(other_ptrs, my_ptrs))
             {
-                release();
-                
-                ControlBlock* other_cb = other.cb.load(std::memory_order_acquire);
-                T* other_ptr = other.ptr.load(std::memory_order_acquire);
-                
-                cb.store(other_cb, std::memory_order_release);
-                ptr.store(other_ptr, std::memory_order_release);
-                
-                other.cb.store(nullptr, std::memory_order_release);
-                other.ptr.store(nullptr, std::memory_order_release);
+                my_ptrs = load_ptrs(memory_order_acquire);
+                other_ptrs = other.load_ptrs(memory_order_acquire);
             }
-            return *this;
+        }
+
+        void reset(T *p = nullptr) noexcept
+        {
+            PointerPair new_ptrs{p ? new ControlBlock() : nullptr, p};
+            auto old_ptrs = exchange_ptrs(new_ptrs);
+            if (old_ptrs.cb)
+            {
+                release(old_ptrs);
+            }
         }
 
         ~LockFreeSharedWithWeakPtr()
         {
-            release();
-        }
-
-        void reset() noexcept
-        {
-            release();
-            cb.store(nullptr, std::memory_order_release);
-            ptr.store(nullptr, std::memory_order_release);
-        }
-
-        void reset(T* p) noexcept
-        {
-            if(p != ptr.load(std::memory_order_acquire))
+            auto old_ptrs = load_ptrs(memory_order_acquire);
+            if (old_ptrs.cb)
             {
-                release();
-                cb.store(p ? new ControlBlock() : nullptr, std::memory_order_release);
-                ptr.store(p, std::memory_order_release);
+                release(old_ptrs);
             }
         }
 
-        void release() noexcept
-        {
-            ControlBlock* current_cb = cb.load(std::memory_order_acquire);
-            if (current_cb && current_cb->removeRef() == 1)
-            {
-                atomic_thread_fence(std::memory_order_acquire);
-                
-                T* current_ptr = ptr.load(std::memory_order_acquire);
-                delete current_ptr;
-                
-                if(current_cb->weak_count_val() == 0)
-                {
-                    delete current_cb;
-                }
-                cb.store(nullptr, std::memory_order_release);
-                ptr.store(nullptr, std::memory_order_release);
-            }
-        }
-
-        T& operator*() const noexcept
-        {
-            return *ptr.load(std::memory_order_acquire);
-        }
-
-        T* operator->() const noexcept
-        {
-            return ptr.load(std::memory_order_acquire);
-        }
-
-        T* get() const noexcept
-        {
-            return ptr.load(std::memory_order_acquire);
-        }
+        T &operator*() const noexcept { return *get(); }
+        T *operator->() const noexcept { return get(); }
+        T *get() const noexcept { return load_ptrs(memory_order_acquire).ptr; }
 
         explicit operator bool() const noexcept
         {
-            return ptr.load(std::memory_order_acquire) != nullptr;
+            return load_ptrs(memory_order_acquire).ptr != nullptr;
         }
 
         int use_count() const noexcept
         {
-            ControlBlock* current_cb = cb.load(std::memory_order_acquire);
-            return current_cb ? current_cb->use_count_val() : 0;
+            auto current = load_ptrs(memory_order_acquire);
+            return current.cb ? current.cb->use_count_val() : 0;
         }
 
-        int weak_count() const noexcept 
+        int weak_count() const noexcept
         {
-            ControlBlock* current_cb = cb.load(std::memory_order_acquire);
-            return current_cb ? current_cb->weak_count_val() : 0;
+            auto current = load_ptrs(memory_order_acquire);
+            return current.cb ? current.cb->weak_count_val() : 0;
+        }
+
+    private:
+        PointerPair exchange_ptrs(const PointerPair &new_ptrs) noexcept
+        {
+            if constexpr (has_native_dwcas())
+            {
+                return ptrs.exchange(new_ptrs, memory_order_acq_rel);
+            }
+            else
+            {
+                auto old = load_ptrs(memory_order_acquire);
+                try_update_pointers(new_ptrs.cb, new_ptrs.ptr);
+                return old;
+            }
+        }
+
+        void release(const PointerPair &old_ptrs) noexcept
+        {
+            if (old_ptrs.cb && old_ptrs.cb->removeRef() == 1)
+            {
+                atomic_thread_fence(memory_order_acquire);
+                delete old_ptrs.ptr;
+
+                if (old_ptrs.cb->weak_count_val() == 0)
+                {
+                    delete old_ptrs.cb;
+                }
+            }
         }
     };
 }

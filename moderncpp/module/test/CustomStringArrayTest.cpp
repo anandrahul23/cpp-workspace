@@ -7,7 +7,7 @@
 import leonrahul.CustomStringArray;
 
 // Use the namespace for convenience
-using StringWorld::CustomStringArray;
+using namespace StringWorld;
 
 // Helper function to create a sample C-style string array for testing
 // Note: The caller is responsible for managing the memory of the outer array,
@@ -219,11 +219,11 @@ TEST_F(CustomStringArrayTest, CopyAssignmentSelf)
     char **c_arr = createSampleData(initialData);
     CustomStringArray arr(c_arr, initialData.size());
     
-    // Store pointers before self-assignment to verify they change
+    // Store pointers before self-assignment
     const char *firstPtr = arr.get(0);
     const char *secondPtr = arr.get(1);
 
-    // Self-assignment should be safe
+    // Self-assignment should be safe and not change anything
     const CustomStringArray& ref = arr;
     arr = ref; // Use reference to avoid direct self-assign warning
 
@@ -232,9 +232,9 @@ TEST_F(CustomStringArrayTest, CopyAssignmentSelf)
     ASSERT_STREQ(arr.get(0), "self");
     ASSERT_STREQ(arr.get(1), "assign");
     
-    // Verify pointers changed (due to copy-and-swap)
-    ASSERT_NE(arr.get(0), firstPtr);
-    ASSERT_NE(arr.get(1), secondPtr);
+    // Verify pointers remain the same (since it's self-assignment, no change should occur)
+    ASSERT_EQ(arr.get(0), firstPtr);
+    ASSERT_EQ(arr.get(1), secondPtr);
 
     delete[] c_arr;
 }

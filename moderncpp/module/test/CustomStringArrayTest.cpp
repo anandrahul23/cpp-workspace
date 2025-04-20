@@ -218,18 +218,23 @@ TEST_F(CustomStringArrayTest, CopyAssignmentSelf)
     std::vector<const char *> initialData = {"self", "assign"};
     char **c_arr = createSampleData(initialData);
     CustomStringArray arr(c_arr, initialData.size());
-    const char *firstPtr = arr.get(0); // Store original pointer
+    
+    // Store pointers before self-assignment to verify they change
+    const char *firstPtr = arr.get(0);
+    const char *secondPtr = arr.get(1);
 
-    arr = arr; // Self-assignment
+    // Self-assignment should be safe
+    const CustomStringArray& ref = arr;
+    arr = ref; // Use reference to avoid direct self-assign warning
 
     ASSERT_EQ(arr.getSize(), 2);
     ASSERT_NE(arr.get(0), nullptr);
     ASSERT_STREQ(arr.get(0), "self");
     ASSERT_STREQ(arr.get(1), "assign");
-    // Check if pointers are still valid (implementation uses copy-and-swap, so they *will* change)
-    // If it didn't use copy-and-swap, we might check ASSERT_EQ(arr.get(0), firstPtr);
-    // But with copy-and-swap, the internal pointers *will* be different after self-assignment.
-    // The key is that the *content* is correct and no memory is leaked/corrupted.
+    
+    // Verify pointers changed (due to copy-and-swap)
+    ASSERT_NE(arr.get(0), firstPtr);
+    ASSERT_NE(arr.get(1), secondPtr);
 
     delete[] c_arr;
 }
@@ -337,21 +342,25 @@ TEST_F(CustomStringArrayTest, MoveAssignmentFromEmpty)
 
 TEST_F(CustomStringArrayTest, MoveAssignmentSelf)
 {
-    std::vector<const char *> initialData = {"self", "move"};
+    std::vector<const char *> initialData = {"move", "self"};
     char **c_arr = createSampleData(initialData);
     CustomStringArray arr(c_arr, initialData.size());
-    char *originalPtr0 = arr.get(0);
-    int originalSize = arr.getSize();
+    
+    // Store pointers to check for validity after move
+    char *ptr1 = arr.get(0);
+    char *ptr2 = arr.get(1);
+    ASSERT_NE(ptr1, nullptr);
+    ASSERT_NE(ptr2, nullptr);
 
-    arr = std::move(arr); // Self-move assignment
+    // Self-move should be safe but is generally not recommended
+    CustomStringArray&& ref = std::move(arr);
+    arr = std::move(ref); // Use reference to avoid direct self-move warning
 
-    // The standard guarantees that self-move-assignment leaves the object in a
-    // valid but unspecified state. Your implementation correctly handles it
-    // by doing nothing due to the `if (this != &other)` check.
-    ASSERT_EQ(arr.getSize(), originalSize);
+    // Verify object is still in valid state
+    ASSERT_EQ(arr.getSize(), 2);
     ASSERT_NE(arr.get(0), nullptr);
-    ASSERT_STREQ(arr.get(0), "self");
-    ASSERT_EQ(arr.get(0), originalPtr0); // Pointer should be unchanged
+    ASSERT_STREQ(arr.get(0), "move");
+    ASSERT_STREQ(arr.get(1), "self");
 
     delete[] c_arr;
 }

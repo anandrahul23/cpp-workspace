@@ -20,30 +20,52 @@ export namespace ThreadSafeWorld {
     private:
         atomic<int> use_count{1};
         atomic<int> weak_count{0};
+        atomic<bool> object_expired{false};
 
     public:
         virtual ~ControlBlock() = default;
         virtual void destroy_object() noexcept = 0;
         virtual void destroy_this() noexcept = 0;
 
-        void addRef() noexcept
-        {
-            use_count.fetch_add(1, memory_order_relaxed);
+        void addRef() noexcept {
+            use_count.fetch_add(1, memory_order_acq_rel);
         }
 
-        int removeRef() noexcept
-        {
-            return use_count.fetch_sub(1, memory_order_release);
+        int removeRef() noexcept {
+            int prev = use_count.fetch_sub(1, memory_order_acq_rel);
+            if (prev == 1) {
+                atomic_thread_fence(memory_order_acquire);
+                object_expired.store(true, memory_order_release);
+            }
+            return prev;
         }
 
-        void addWeakRef() noexcept
-        {
-            weak_count.fetch_add(1, memory_order_relaxed);
+        void addWeakRef() noexcept {
+            weak_count.fetch_add(1, memory_order_acq_rel);
         }
 
-        void removeWeakRef() noexcept
-        {
-            weak_count.fetch_sub(1, memory_order_release);
+        void removeWeakRef() noexcept {
+            if (weak_count.fetch_sub(1, memory_order_acq_rel) == 1) {
+                atomic_thread_fence(memory_order_acquire);
+                if (use_count_val() == 0) {
+                    destroy_this();
+                }
+            }
+        }
+
+        bool tryAddRef() noexcept {
+            int count = use_count.load(memory_order_relaxed);
+            while (count != 0) {
+                if (use_count.compare_exchange_weak(count, count + 1,
+                    memory_order_acq_rel, memory_order_relaxed)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        bool isExpired() const noexcept {
+            return use_count.load(memory_order_acquire) == 0;
         }
 
         int use_count_val() const noexcept
@@ -65,7 +87,11 @@ export namespace ThreadSafeWorld {
         explicit BasicControlBlock(T* p) : ptr(p) {}
         
         void destroy_object() noexcept override {
-            delete ptr;
+            if (ptr) {
+                delete ptr;
+                ptr = nullptr;
+                atomic_thread_fence(memory_order_release);
+            }
         }
         
         void destroy_this() noexcept override {
@@ -138,11 +164,17 @@ export namespace ThreadSafeWorld {
         
     public:
         explicit ControlBlockArray(size_t n) : size(n) {
-            ptr = new T[n]();
+            ptr = static_cast<T*>(::operator new[](size * sizeof(T)));
         }
         
         void destroy_object() noexcept override {
-            delete[] ptr;
+            if (ptr) {
+                for (size_t i = 0; i < size; ++i) {
+                    ptr[i].~T();
+                }
+                ::operator delete[](ptr);
+                ptr = nullptr;
+            }
         }
         
         void destroy_this() noexcept override {
@@ -312,12 +344,15 @@ export namespace ThreadSafeWorld {
             }
         }
 
+        // Add aliasing constructor support with proper reference handling
         template<typename U>
-        LockFreeSharedWithWeakPtr(const LockFreeSharedWithWeakPtr<U>& other, T* ptr) noexcept {
+        LockFreeSharedWithWeakPtr(const LockFreeSharedWithWeakPtr<U>& other, element_type* ptr) noexcept {
+            PointerPair new_ptrs{nullptr, nullptr};
             auto other_ptrs = other.load_ptrs(memory_order_acquire);
             if (other_ptrs.cb) {
-                other_ptrs.cb->addRef();
-                store_ptrs(PointerPair{other_ptrs.cb, ptr}, memory_order_release);
+                new_ptrs.cb = other_ptrs.cb;
+                new_ptrs.ptr = ptr;
+                store_ptrs(new_ptrs, memory_order_release);
             }
         }
 
@@ -367,15 +402,10 @@ export namespace ThreadSafeWorld {
             }
         }
 
-        void reset(T *p = nullptr) noexcept
-        {
-            PointerPair new_ptrs{nullptr, nullptr};
-            if (p) {
-                new_ptrs = PointerPair{new BasicControlBlock<T>(p), p};
-            }
-            auto old_ptrs = exchange_ptrs(new_ptrs);
-            if (old_ptrs.cb)
-            {
+        // Reset functionality with proper cleanup
+        void reset() noexcept {
+            PointerPair old_ptrs = exchange_ptrs(PointerPair{nullptr, nullptr});
+            if (old_ptrs.cb) {
                 release(old_ptrs);
             }
         }
@@ -411,29 +441,25 @@ export namespace ThreadSafeWorld {
         }
 
     private:
-        PointerPair exchange_ptrs(const PointerPair &new_ptrs) noexcept
-        {
-            if constexpr (has_native_dwcas())
-            {
+        PointerPair exchange_ptrs(const PointerPair& new_ptrs) noexcept {
+            if constexpr (has_native_dwcas()) {
                 return ptrs.exchange(new_ptrs, memory_order_acq_rel);
-            }
-            else
-            {
-                auto old = load_ptrs(memory_order_acquire);
-                try_update_pointers(new_ptrs.cb, new_ptrs.ptr);
-                return old;
+            } else {
+                PointerPair expected;
+                do {
+                    expected = load_ptrs(memory_order_acquire);
+                } while (!compare_exchange_ptrs(expected, new_ptrs));
+                return expected;
             }
         }
 
-        void release(const PointerPair &old_ptrs) noexcept
+        void release(PointerPair old_ptrs) noexcept
         {
-            if (old_ptrs.cb && old_ptrs.cb->removeRef() == 1)
-            {
+            if (old_ptrs.cb && old_ptrs.cb->removeRef() == 1) {
                 atomic_thread_fence(memory_order_acquire);
                 old_ptrs.cb->destroy_object();
 
-                if (old_ptrs.cb->weak_count_val() == 0)
-                {
+                if (old_ptrs.cb->weak_count_val() == 0) {
                     old_ptrs.cb->destroy_this();
                 }
             }
@@ -464,9 +490,20 @@ export namespace ThreadSafeWorld {
     // Utility functions for array support
     template<typename T>
     LockFreeSharedWithWeakPtr<T> make_shared_array(size_t size) {
-        auto* cb = new ControlBlockArray<T>(size);
-        return LockFreeSharedWithWeakPtr<T>(cb->get(), 
-            [cb](T*) { cb->destroy_this(); });
+        auto cb = new ControlBlockArray<T>(size);
+        auto ptr = cb->get();
+        try {
+            for (size_t i = 0; i < size; ++i) {
+                new (ptr + i) T();
+            }
+            return LockFreeSharedWithWeakPtr<T>(ptr, [cb](T*) { 
+                cb->destroy_object();
+                cb->destroy_this(); 
+            });
+        } catch (...) {
+            delete cb;
+            throw;
+        }
     }
 
     // Enhanced make_shared with strong exception guarantee
@@ -648,25 +685,26 @@ export namespace ThreadSafeWorld {
         }
 
         LockFreeSharedWithWeakPtr<T> lock() const noexcept {
+            WeakPointerPair current;
             while (true) {
-                auto current = ptrs.load(memory_order_acquire);
+                current = ptrs.load(memory_order_acquire);
                 if (!current.cb) {
                     return LockFreeSharedWithWeakPtr<T>();
                 }
 
-                // Try to increment the use count
-                current.cb->addRef();
-                
-                // Verify the control block hasn't changed
-                auto after = ptrs.load(memory_order_acquire);
-                if (current.cb == after.cb) {
-                    return LockFreeSharedWithWeakPtr<T>(
-                        current.ptr, 
-                        [current](T*) { current.cb->destroy_this(); });
+                if (current.cb->tryAddRef()) {
+                    // Successfully increased reference count
+                    auto recheck = ptrs.load(memory_order_acquire);
+                    if (recheck.cb == current.cb) {
+                        return LockFreeSharedWithWeakPtr<T>(current.ptr,
+                            [cb = current.cb](T*) { cb->removeRef(); });
+                    }
+                    // Control block changed, undo reference increment
+                    current.cb->removeRef();
+                } else {
+                    // Control block is expired
+                    return LockFreeSharedWithWeakPtr<T>();
                 }
-
-                // Control block changed, undo increment and retry
-                current.cb->removeRef();
             }
         }
 
@@ -677,13 +715,14 @@ export namespace ThreadSafeWorld {
 
         bool expired() const noexcept {
             auto current = ptrs.load(memory_order_acquire);
-            return !current.cb || current.cb->use_count_val() == 0;
+            return !current.cb || current.cb->isExpired();
         }
 
         void reset() noexcept {
-            auto old_ptrs = ptrs.exchange(WeakPointerPair{nullptr, nullptr}, 
-                                        memory_order_acq_rel);
+            WeakPointerPair new_ptrs{nullptr, nullptr};
+            auto old_ptrs = ptrs.exchange(new_ptrs, memory_order_acq_rel);
             if (old_ptrs.cb) {
+                atomic_thread_fence(memory_order_acquire);
                 old_ptrs.cb->removeWeakRef();
             }
         }

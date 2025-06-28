@@ -97,7 +97,7 @@ export namespace StringWorld
         }
 
         // move assignment operator
-        CustomStringArray &operator=(CustomStringArray &&other)
+        CustomStringArray &operator=(CustomStringArray &&other) noexcept
         {
             // a liitle optimization to check for self assignment and
             //  not needed to delete

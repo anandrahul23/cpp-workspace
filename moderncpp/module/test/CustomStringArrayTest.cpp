@@ -507,4 +507,37 @@ TEST_F(CustomStringArrayTest, CopyConstructorLoopBug)
     // GTEST_SKIP() << "Skipping test for Copy Constructor loop bug until fixed, likely crashes.";
 }
 
+
+
 // Add more tests for edge cases as needed (e.g., very long strings, large arrays if performance matters)
+TEST_F(CustomStringArrayTest, Destructor) {
+    // This test primarily checks for memory leaks or double-frees.
+    // Valgrind or AddressSanitizer are the best tools for this.
+    // Here, we just ensure no immediate crash and that the destructor is called.
+
+    // Case 1: Non-empty array
+    {
+        std::vector<const char*> initialData = {"one", "two", "three"};
+        char** c_arr = createSampleData(initialData);
+        CustomStringArray arr(c_arr, initialData.size());
+        // arr goes out of scope and its destructor is called.
+        // If there are memory issues, they might manifest here.
+        delete[] c_arr;
+    } // arr is destroyed here
+
+    // Case 2: Empty array
+    {
+        CustomStringArray arr;
+        // arr goes out of scope. Should not cause issues.
+    } // arr is destroyed here
+
+    // Case 3: Array with nullptrs
+    {
+        std::vector<const char*> initialData = {"a", nullptr, "c"};
+        char** c_arr = createSampleData(initialData);
+        CustomStringArray arr(c_arr, initialData.size());
+        delete[] c_arr;
+    } // arr is destroyed here
+
+    SUCCEED(); // If we reach here without crashing, it's a good sign.
+}

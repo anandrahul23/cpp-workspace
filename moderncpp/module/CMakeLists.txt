@@ -4,6 +4,27 @@
 # or external tools for module dependency scanning.
 cmake_minimum_required(VERSION 3.28) # <-- Updated for better module support
 
+# Save current state (if any) and turn OFF for benchmark
+#Attempt to set CMAKE_OSX_SYSROOT if on Apple and not already set by user/toolchain.
+# This helps the compiler find system headers, especially with custom toolchains.
+# Attempt to set CMAKE_OSX_SYSROOT if on Apple and not already set by user/toolchain.
+# This helps the compiler find system headers, especially with custom toolchains.
+if(APPLE)
+  if(NOT DEFINED CMAKE_OSX_SYSROOT) # Only if not already defined in cache/args
+    execute_process(
+      COMMAND xcrun --show-sdk-path
+      OUTPUT_VARIABLE SDK_PATH
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      ERROR_QUIET
+    )
+    if(SDK_PATH AND EXISTS "${SDK_PATH}")
+      set(CMAKE_OSX_SYSROOT "${SDK_PATH}" CACHE PATH "System root for macOS SDK")
+      message(STATUS "Auto-detected and set CMAKE_OSX_SYSROOT to ${SDK_PATH}")
+    else()
+      message(WARNING "Could not auto-determine macOS SDK path using xcrun. If you encounter header issues with a non-system compiler, consider setting CMAKE_OSX_SYSROOT manually (e.g., via -DCMAKE_OSX_SYSROOT=/path/to/MacOSX.sdk).")
+    endif()
+  endif()
+endif()
 # Define the project name and language
 project(myproject LANGUAGES CXX)
 
@@ -15,7 +36,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # --- Enable C++ Module Support ---
 # This tells CMake to scan C++20 sources for module dependencies ('import'/'export')
 # and handle the necessary compilation order and flags automatically.
-set(CMAKE_CXX_SCAN_FOR_MODULES ON)
+#set(CMAKE_CXX_SCAN_FOR_MODULES ON)
 # Note: Ensure your compiler (Clang >= 16, GCC >= 12, MSVC >= VS2022 17.4+)
 # has adequate C++20 module support.
 
@@ -24,6 +45,9 @@ set(INC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/include)
 set(SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src)
 set(TEST_DIR ${CMAKE_CURRENT_SOURCE_DIR}/test)
 set(BENCHMARK_DIR ${CMAKE_CURRENT_SOURCE_DIR}/benchmark)
+
+
+
 
 # --- Compiler Flags ---
 add_compile_options(-Wall)
@@ -52,24 +76,15 @@ add_library(core_library STATIC) # Or SHARED
 # Use target_sources with FILE_SETs for module awareness
 # BASE_DIRS is set to the top-level source dir because paths from GLOB_RECURSE are relative to it
 target_sources(core_library
-    # Regular Source Files (.cpp) - Excluding main.cpp
-    # List these directly under the PRIVATE scope
-    ${CORE_IMPL_FILES}
-
     # Module Interface Units (.cppm)
-    # Use FILE_SET only for CXX_MODULES (and potentially HEADERS if needed)
-
-    # Public interface sources (including module interfaces)
+    # These are part of the PUBLIC interface of the library.
     PUBLIC
         FILE_SET CXX_MODULES BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR} FILES
-            ${CORE_MODULE_FILES} # Assuming CustomStringArray.cppm is in this list
+            ${CORE_MODULE_FILES}
 
-    # Private implementation sources
+    # Private implementation sources (.cpp)
     PRIVATE
-        ${CORE_IMPL_FILES} # Assuming regular .cpp implementation files are here
-
-    # Note: Headers (.h) are typically handled via include directories,
-    # or potentially a FILE_SET HEADERS if you need finer control over header sets.
+        ${CORE_IMPL_FILES}
 )
 
 # Define include directories for the library and its consumers.
@@ -90,6 +105,19 @@ add_executable(myprogram ${MAIN_CPP_FILE})
 # Link the executable against the core library. This brings in all the
 # compiled module and non-module code and necessary include paths.
 target_link_libraries(myprogram PRIVATE core_library)
+
+# --- Dependency Configuration: Control CXX Module Scanning ---
+# Store the current project's CMAKE_CXX_SCAN_FOR_MODULES setting.
+# This variable is typically set to ON for C++20 module projects.
+set(PROJECT_CXX_SCAN_FOR_MODULES_SETTING ${CMAKE_CXX_SCAN_FOR_MODULES})
+
+# Temporarily turn OFF CXX module scanning for external dependencies
+# like GoogleTest and GoogleBenchmark. These libraries typically do not
+# use C++20 modules themselves, and attempting to scan their sources
+# can lead to errors or unexpected behavior, especially with try_compile checks
+# or if they are not prepared for module-specific compiler flags.
+message(STATUS "Temporarily disabling CMAKE_CXX_SCAN_FOR_MODULES for external dependencies.")
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
 # --- Google Test Integration ---
 enable_testing()
@@ -112,6 +140,11 @@ FetchContent_Declare(
 )
 set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "Disable building benchmark's tests" FORCE)
 FetchContent_MakeAvailable(googlebenchmark)
+
+# Restore the project's CMAKE_CXX_SCAN_FOR_MODULES setting after dependencies are handled.
+message(STATUS "Restoring CMAKE_CXX_SCAN_FOR_MODULES to project setting: ${PROJECT_CXX_SCAN_FOR_MODULES_SETTING}")
+set(CMAKE_CXX_SCAN_FOR_MODULES ${PROJECT_CXX_SCAN_FOR_MODULES_SETTING})
+
 
 # --- Test Executable Target ---
 # Find test files recursively (if needed, otherwise keep simple GLOB)

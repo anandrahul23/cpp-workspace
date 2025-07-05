@@ -1,6 +1,10 @@
 #include "../include/ctasks.h"
 #include "../include/producer_consumer.h"
-#include "../include/ex_templates.h"    
+#include "../include/ex_templates.h"   
+#include "../include/ex_crtp.h"
+#include "../include/thread_pool_using_packaged_task.h"
+#include "../include/ExecutableTask.h"
+#include "../include/ExecutorThreadPool.h"
 
 #include <chrono>
 #include <cmath>
@@ -9,6 +13,13 @@
 #include <vector>
 #include <thread>
 #include <string>
+#include <random>
+#include <ranges>
+#include <iterator>
+#include <algorithm>
+#include <numeric>
+#include <ranges>
+
 
 
 using namespace std::chrono_literals;
@@ -125,8 +136,8 @@ int main(int argc, char *argv[])
 {
     //return fork_join_example().get();
 
-    ProducerConsumer<int> samplePc(1000);
-    this_thread::sleep_for(1s);
+    // ProducerConsumer<int> samplePc(1000);
+    // this_thread::sleep_for(1s);
 
    // MyMax(12, -43U);
 
@@ -138,5 +149,57 @@ int main(int argc, char *argv[])
 
     // std::cout<< maxEl<<endl;
     // cout<<" size of strd::string:"<<sizeof(std::string)<<endl;
+
+    //algorithm
+    // std::vector<int> v{1, 1, 0, 0, 1, 0, 1, 0, 0, 0, 0, 1, 0, 1, 1};
+    // auto it = std::search_n(v.cbegin(), v.cend(), 2, 0);
+    // if (it != v.cend())
+    //     std::cout << "found at index "
+    //               << std::distance(v.cbegin(), it) << '\n';
+
+    // unique_ptr<Circle> circlePtr = make_unique<Circle>();
+    // unique_ptr<Circle> circlePtr1 = circlePtr->clone(); 
+    // circlePtr->draw();
+    // circlePtr1->draw();
+
+    // ThreadPool pool{6}; 
+
+    auto lamdaLargeCal = [] (const string& message, size_t noElem) 
+                        {
+                            cout<<"random integer generation thread id:"<<this_thread::get_id()<<endl;
+                            random_device rd;
+                            mt19937 engine(rd()); 
+                            uniform_int_distribution<int> intDist(1, 10000);
+                            cout<<message<<endl; 
+                            vector<int> intVector;
+                            intVector.reserve(noElem);
+                            generate_n(back_inserter(intVector), 1000, [&intDist, &engine]() 
+                                                                        {return intDist(engine);
+                                                                        });
+                            ostream_iterator<int> opItr(cout, " ");
+                             ranges::copy(intVector, opItr);
+                             return intVector; 
+                        };
+
+    cout<<"Main thread id:"<<this_thread::get_id()<<endl;
+
+    // pool.scheduleTask(lamdaLargeCal, "generating 1000 random integers in a new thread", 1000); 
+
+    ExeccutableThreadPool threadPool{6};
+
+    auto myTask = globalScheduleTask(threadPool, lamdaLargeCal, "generating 1000 random integers in a new thread", 1000);
+    auto res = myTask->then([](const vector<int>& intVec){
+
+        //do some tramsform
+        vector<int> resVec;
+        cout<<"\n\n*****transforming the input vector to multiply by 2******\n\n"<<endl<<endl;
+        ranges::transform(intVec, back_inserter(resVec), [](int num)
+                          { return 2 * num; });
+        return resVec; 
+        
+    })->get_future().get(); 
+
+    ostream_iterator<int> opIt1(std::cout, "  ");
+    ranges::copy(res, opIt1);
     return 0;
 }

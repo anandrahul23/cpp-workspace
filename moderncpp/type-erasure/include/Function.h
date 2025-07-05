@@ -36,6 +36,8 @@ class Function<R(Args...)>
     };
     template<typename Callable> struct Model : Concept {
         Model(Callable const& callable) : callable_(callable) {}
+    //R value Constructor
+        Model(Callable&& callable) : callable_(std::move(callable)) {}
         R invoke(Args... args) const override {
             return callable_(std::forward<Args>(args)...);
         }

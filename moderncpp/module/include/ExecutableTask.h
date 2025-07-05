@@ -74,8 +74,19 @@ auto then(FunctionType&& fun)
     auto lambdaCallable = [parent = this->shared_from_this(), f = std::forward<FunctionType>(fun)]()mutable
     {
         auto& parentTask = static_cast<STask<result_t>&>(*parent); //safe to do static cast
-        auto res = parentTask.get_future().get();
-        return std::invoke(f, std::move(res));
+        //handle void return type
+        if constexpr is_same_v<result_t, void>
+        {
+            parentTask.get_future().get();
+            f();
+        }
+        else
+        {
+            auto res = parentTask.get_future().get();
+            return std::invoke(f, std::move(res));  
+        }
+        
+        
     } ;
     auto nextTask = make_shared<STask<ResultT>>(executor_, lambdaCallable);
     executor_.scheduleTask(nextTask);

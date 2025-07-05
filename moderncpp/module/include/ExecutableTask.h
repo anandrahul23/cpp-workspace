@@ -75,7 +75,7 @@ auto then(FunctionType&& fun)
     {
         auto& parentTask = static_cast<STask<result_t>&>(*parent); //safe to do static cast
         //handle void return type
-        if constexpr is_same_v<result_t, void>
+        if constexpr(is_same_v<result_t, void>)
         {
             parentTask.get_future().get();
             f();

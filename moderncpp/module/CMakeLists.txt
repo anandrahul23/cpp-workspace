@@ -28,10 +28,25 @@ endif()
 # Define the project name and language
 project(myproject LANGUAGES CXX)
 
+
+
+
 # Set the C++ standard
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+
+# --- Find Boost ---
+# If Boost is installed via Homebrew, CMake can often find it automatically.
+# If it's in a non-standard path like the one you specified, you can hint to CMake
+# by setting BOOST_ROOT via the command line, for example:
+# cmake -DBOOST_ROOT=/usr/local/Cellar/boost/1.88.0 ..
+find_package(Boost 1.88.0 REQUIRED COMPONENTS system filesystem)
+
+# This message will print upon successful configuration
+message(STATUS "Found Boost ${Boost_VERSION_STRING} at ${Boost_INCLUDE_DIRS}")
+
+
 
 # --- Enable C++ Module Support ---
 # This tells CMake to scan C++20 sources for module dependencies ('import'/'export')
@@ -39,6 +54,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 #set(CMAKE_CXX_SCAN_FOR_MODULES ON)
 # Note: Ensure your compiler (Clang >= 16, GCC >= 12, MSVC >= VS2022 17.4+)
 # has adequate C++20 module support.
+
+
 
 # --- Project Structure ---
 set(INC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -97,6 +114,11 @@ target_include_directories(core_library
         $<BUILD_INTERFACE:${INC_DIR}>   # Headers within include/
         $<INSTALL_INTERFACE:include> # For installation (adjust if needed)
 )
+
+# Link the core library to the Boost components you need.
+# Using PUBLIC will make Boost headers available to targets that link to core_library.
+# If Boost is only used in your .cpp files, you can change this to PRIVATE.
+target_link_libraries(core_library PUBLIC Boost::system Boost::filesystem)
 
 # --- Main Executable Target ---
 # Define the executable using ONLY the source file containing main()

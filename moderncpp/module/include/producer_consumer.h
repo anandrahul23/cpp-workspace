@@ -77,7 +77,7 @@ template <typename T> class ProducerConsumer
             
                 unique_lock<mutex> lk{mt_};
                 producer_ready.wait(lk, [this]()
-                                    { return bufferQueue.size() < buffer_capacity || stop_thread.load(memory_order_acquire); });
+                                    { return bufferQueue.size() < buffer_capacity; });
 
                 
                 // if(stop_thread.load(memory_order_acquire))

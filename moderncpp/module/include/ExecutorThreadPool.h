@@ -43,6 +43,7 @@ public:
         size_t n = thread::hardware_concurrency();
         n = min(noOfThreads, n);
         //schedule the threads; 
+        cout<<"\n \n Total non fo threads:"<<n<<endl;
         for (int i =0; i < n; ++i)
         {
             threadPool_.emplace_back(&ExeccutableThreadPool::run_task, this);
@@ -89,7 +90,7 @@ public:
         }
             auto task = std::move(taskQueue.front());
             taskQueue.pop();
-            std::cout<<"executing task in thread id:"<<this_thread::get_id()<<endl;
+            std::cout<<"\n\nexecuting task in thread id:"<<this_thread::get_id()<<endl;
 
             uLk.unlock(); // release mutex before executing task
 

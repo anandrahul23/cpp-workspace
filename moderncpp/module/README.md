@@ -9,3 +9,4 @@ cmake -S . -B build -G Ninja \
  -DCMAKE_OSX_SYSROOT="${SDK_PATH}" \
  -DCMAKE_CXX_FLAGS="-isysroot ${SDK_PATH}" \
  -DCMAKE_C_FLAGS="-isysroot ${SDK_PATH}" # Also add for C compiler just in case
+ -DBOOST_ROOT=/usr/local/Cellar/boost/1.88.0

@@ -1,9 +1,9 @@
 #pragma once
 #include <memory>
 
-template <typename T, size_t N> constexpr size_t dimensionnOf(const T (&)[N]) {
-	return N;
-}
+	template <typename T, size_t N> constexpr size_t dimensionnOf(const T (&)[N]) {
+		return N;
+	}
 
 
 
@@ -95,7 +95,7 @@ using true_type = BooleanConstant<true>; // IntegralConstant<bool, true>
 using false_type = BooleanConstant<false>; //IntegralConstant<bool, false>
 
 template<bool B, typename T = void> 
-struct EnableIf 
+struct EnableIf
 {
 };
 
